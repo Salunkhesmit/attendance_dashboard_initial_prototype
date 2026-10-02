@@ -15,13 +15,13 @@
 
   <div class="offcanvas offcanvas-start sidebar p-3" tabindex="-1" id="mobileNav" aria-label="Navigation">
     <div class="d-flex flex-column h-100">
-      <div class="d-flex align-items-center gap-2 px-2 py-3 mb-3 border-bottom border-secondary border-opacity-25">
-        <div class="bg-primary text-white rounded p-2 d-flex align-items-center justify-content-center" style="width:36px;height:36px">
+      <div class="d-flex align-items-center gap-2 px-2 py-3 mb-2 border-bottom border-secondary border-opacity-25">
+        <div class="brand-badge">
           <i class="bi bi-bar-chart-steps fs-5"></i>
         </div>
         <div>
           <h6 class="text-white fw-bold mb-0">Attendance Analytics</h6>
-          <span class="text-muted" style="font-size:.75rem">CO Dept</span>
+          <span class="sidebar-sub">Computer Engineering</span>
         </div>
         <button type="button" class="btn-close btn-close-white ms-auto" data-bs-dismiss="offcanvas" aria-label="Close"></button>
       </div>
@@ -31,53 +31,60 @@
 
   <div class="d-flex">
     <aside class="sidebar sidebar-desktop d-none d-lg-flex flex-column p-3">
-      <div class="d-flex align-items-center gap-2 px-2 py-3 mb-3 border-bottom border-secondary border-opacity-25">
-        <div class="bg-primary text-white rounded p-2 d-flex align-items-center justify-content-center" style="width:36px;height:36px">
+      <div class="d-flex align-items-center gap-2 px-2 py-3 mb-2 border-bottom border-secondary border-opacity-25">
+        <div class="brand-badge">
           <i class="bi bi-bar-chart-steps fs-5"></i>
         </div>
         <div>
           <h6 class="text-white fw-bold mb-0">Attendance Analytics</h6>
-          <span class="text-muted" style="font-size:.75rem">CO Dept</span>
+          <span class="sidebar-sub">Computer Engineering</span>
         </div>
       </div>
 
       <nav class="nav flex-column gap-1 flex-grow-1" id="nav-desktop"></nav>
 
-      <div class="p-3 rounded bg-dark bg-opacity-50 border border-secondary border-opacity-25 mt-auto">
-        <div class="d-flex align-items-center gap-2">
-          <i class="bi bi-mortarboard text-primary fs-4"></i>
+      <div class="sidebar-footer mt-auto">
+        <div class="d-flex align-items-center gap-2 mb-2">
+          <i class="bi bi-mortarboard-fill text-primary fs-5"></i>
           <div>
-            <div class="text-white small fw-bold">Semesters Tracked</div>
-            <div class="text-muted" style="font-size:.72rem">CO1 • CO3 • CO5</div>
+            <div class="text-white small fw-bold">Academic Year 2026–27</div>
+            <div class="sidebar-sub">CO1 • CO3 • CO5 tracked</div>
           </div>
+        </div>
+        <div class="d-flex gap-2 mt-2">
+          <span class="sem-chip">CO1</span>
+          <span class="sem-chip">CO3</span>
+          <span class="sem-chip">CO5</span>
         </div>
       </div>
     </aside>
 
     <div class="d-flex flex-column flex-grow-1" style="min-width:0;min-height:100vh">
-      <header class="top-header d-flex align-items-center justify-content-between px-4 no-print">
+      <header class="top-header d-flex align-items-center justify-content-between px-3 px-md-4 no-print">
         <div class="d-flex align-items-center gap-3">
           <button class="btn btn-sm btn-outline-secondary d-lg-none" data-bs-toggle="offcanvas" data-bs-target="#mobileNav" aria-label="Open menu">
             <i class="bi bi-list fs-5"></i>
           </button>
-          <div class="d-none d-sm-block">
-            <span class="text-muted small">Department: </span>
-            <span class="fw-semibold">Computer Engineering</span>
+          <div class="d-none d-sm-flex align-items-center gap-2">
+            <span class="header-pill"><i class="bi bi-calendar3 me-1"></i>2026–27</span>
+            <span class="header-pill d-none d-md-inline-flex"><i class="bi bi-building me-1"></i>Computer Engineering</span>
           </div>
         </div>
-        <button id="theme-btn" class="btn btn-outline-secondary btn-sm rounded-pill px-3 d-flex align-items-center gap-2"></button>
+        <div class="d-flex align-items-center gap-2">
+          <span class="header-pill d-none d-md-inline-flex"><i class="bi bi-person-badge me-1"></i>HOD</span>
+          <button id="theme-btn" class="btn btn-outline-secondary btn-sm rounded-pill px-3 d-flex align-items-center gap-2"></button>
+        </div>
       </header>
 
-      <main class="p-4 flex-grow-1" id="view"></main>
+      <main class="p-3 p-md-4 flex-grow-1" id="view"></main>
     </div>
   </div>
 
-  <!-- Manage / Configure modal (used from the Dashboard) -->
   <div class="modal fade" id="manageModal" tabindex="-1" aria-hidden="true">
     <div class="modal-dialog modal-xl modal-dialog-scrollable">
       <div class="modal-content">
         <div class="modal-header">
-          <h5 class="modal-title"><i class="bi bi-gear-fill me-2"></i>Manage / Configure</h5>
+          <h5 class="modal-title"><i class="bi bi-gear-fill me-2 text-primary"></i>Manage / Configure</h5>
           <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
         </div>
         <div class="modal-body" id="manage-body"></div>
