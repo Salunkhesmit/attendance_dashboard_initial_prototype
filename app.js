@@ -1,5 +1,5 @@
 /* ==========================================================
-   app.js — pages, filters, charts, marking, management.
+   app.js — pages, filters, charts, marking, management, auth.
    Plain JavaScript, no framework.
    ========================================================== */
 
@@ -9,22 +9,28 @@ const fmtDate  = d => new Date(d + 'T00:00:00').toLocaleDateString('en-GB', { we
 const fmtShort = d => new Date(d + 'T00:00:00').toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
 const toMin    = t => { const [h, m] = String(t).split(':').map(Number); return h * 60 + m; };
 
-const DATES = getDates();
+let DATES = getDates();
+const _initialMonths = getMonths();
 const state = {
   tab: 'dashboard',
+  /* shared date/range — used by Dashboard, Mark, Daily, Reports */
   date: DATES.length ? DATES[DATES.length - 1] : todayISO(),
-  month: currentYM(),
+  month: _initialMonths[0] || currentYM(),
+  rangeMode: 'month',           // 'day' | 'week' | 'month' | 'range'
+  rangeStart: DATES.length ? DATES[0] : todayISO(),
+  rangeEnd:   DATES.length ? DATES[DATES.length - 1] : todayISO(),
+
   semester: 'all',
   status: 'all',
   search: '',
   roll: null,
   analysisView: 'semesters',
   analysisSem: null,
-  analysisMonth: currentYM(),
+  analysisMonth: _initialMonths[0] || currentYM(),
   analysisSearch: '',
   theme: localStorage.getItem('theme') || 'light',
   manageSem: 5, manageTab: 'students', manageDay: 'Monday',
-  markSem: 5, markDate: todayISO()
+  markSem: 5
 };
 let charts = [];
 
@@ -60,10 +66,11 @@ const statusOptions = () => optionsHTML(
   [['all','All Statuses'], ['Present','Present'], ['Absent','Absent'], ['Late','Late'], ['Bunk','Bunk / Missed']],
   state.status
 );
-const monthOptions = () => {
+const monthOptions = (selMonth) => {
   const months = getMonths();
-  if (!months.includes(state.month)) months.unshift(state.month);
-  return optionsHTML(months.map(m => [m, monthLabel(m)]), state.month);
+  const target = selMonth || state.month;
+  if (!months.includes(target) && target) months.unshift(target);
+  return optionsHTML(months.map(m => [m, monthLabel(m)]), target);
 };
 
 const refSemester = () => state.semester === 'all' ? 5 : +state.semester;
@@ -91,6 +98,251 @@ const banner = () => IS_PLACEHOLDER_DATA
   : '';
 const emptyBox = msg => `<div class="text-center py-5 text-muted"><i class="bi bi-search fs-2 d-block mb-2 text-secondary"></i>${msg}</div>`;
 
+/* ==========================================================
+   Toast
+   ========================================================== */
+function toast(msg, tone = 'success') {
+  const el = document.createElement('div');
+  el.className = `app-toast toast-${tone}`;
+  el.innerHTML = `<i class="bi bi-${tone === 'danger' ? 'x-circle' : 'check-circle'}-fill me-2"></i>${esc(msg)}`;
+  document.body.appendChild(el);
+  requestAnimationFrame(() => el.classList.add('show'));
+  setTimeout(() => {
+    el.classList.remove('show');
+    setTimeout(() => el.remove(), 320);
+  }, 3200);
+}
+
+/* ==========================================================
+   Shared date-scope bar — used on Dashboard / Mark / Daily / Reports
+   ========================================================== */
+function scopeSelectorHTML(idPrefix) {
+  const isMonth = state.rangeMode === 'month';
+  const isDate  = state.rangeMode === 'day' || state.rangeMode === 'week';
+  const isRange = state.rangeMode === 'range';
+  return `
+    <div class="scope-bar">
+      <div class="scope-group">
+        <label class="form-label small fw-semibold text-muted mb-0">Range</label>
+        <select id="${idPrefix}-range" class="form-select form-select-sm">
+          ${optionsHTML([['day','Day'],['week','Week'],['month','Month'],['range','Custom']], state.rangeMode)}
+        </select>
+      </div>
+      ${isMonth ? `<div class="scope-group">
+        <label class="form-label small fw-semibold text-muted mb-0">Month</label>
+        <select id="${idPrefix}-month" class="form-select form-select-sm">${monthOptions()}</select>
+      </div>` : ''}
+      ${isDate ? `<div class="scope-group">
+        <label class="form-label small fw-semibold text-muted mb-0">${state.rangeMode === 'week' ? 'Week of' : 'Date'}</label>
+        <select id="${idPrefix}-date" class="form-select form-select-sm">${optionsHTML(DATES.map(d => [d, fmtDate(d)]), state.date)}</select>
+      </div>` : ''}
+      ${isRange ? `
+        <div class="scope-group">
+          <label class="form-label small fw-semibold text-muted mb-0">From</label>
+          <input type="date" id="${idPrefix}-start" class="form-control form-control-sm" value="${esc(state.rangeStart)}">
+        </div>
+        <div class="scope-group">
+          <label class="form-label small fw-semibold text-muted mb-0">To</label>
+          <input type="date" id="${idPrefix}-end" class="form-control form-control-sm" value="${esc(state.rangeEnd)}">
+        </div>
+      ` : ''}
+    </div>`;
+}
+
+function bindScopeSelector(idPrefix, onChange) {
+  const r = document.getElementById(`${idPrefix}-range`);
+  if (r) r.onchange = e => { state.rangeMode = e.target.value; onChange(); };
+  const m = document.getElementById(`${idPrefix}-month`);
+  if (m) m.onchange = e => { state.month = e.target.value; onChange(); };
+  const d = document.getElementById(`${idPrefix}-date`);
+  if (d) d.onchange = e => { state.date = e.target.value; onChange(); };
+  const s = document.getElementById(`${idPrefix}-start`);
+  if (s) s.onchange = e => { state.rangeStart = e.target.value; onChange(); };
+  const en = document.getElementById(`${idPrefix}-end`);
+  if (en) en.onchange = e => { state.rangeEnd = e.target.value; onChange(); };
+}
+
+function dayChipStripHTML(activeDate) {
+  const dates = getRangeDates();
+  if (!dates.length) return '';
+  return `<div class="day-chip-strip" id="day-strip">
+    ${dates.map(d => `<button type="button" class="day-chip ${d === activeDate ? 'active' : ''}" data-day="${esc(d)}">
+      <span class="dc-day">${weekdayOf(d).slice(0,3)}</span>
+      <span class="dc-date">${fmtShort(d)}</span>
+    </button>`).join('')}
+  </div>`;
+}
+
+function bindDayChipStrip(onChange) {
+  const strip = document.getElementById('day-strip');
+  if (!strip) return;
+  strip.querySelectorAll('[data-day]').forEach(b => {
+    b.onclick = () => {
+      state.date = b.dataset.day;
+      onChange(b.dataset.day);
+    };
+  });
+}
+
+/* ---------- Range helpers ---------- */
+function getRangeDates() {
+  if (state.rangeMode === 'day') {
+    return (state.date && RECORDS.some(r => r.date === state.date)) ? [state.date] : [];
+  }
+  if (state.rangeMode === 'week')   return weekDatesOf(state.date);
+  if (state.rangeMode === 'range')  return datesBetween(state.rangeStart, state.rangeEnd);
+  return datesInMonth(state.month);
+}
+
+function rangeLabel() {
+  if (state.rangeMode === 'day' && state.date)   return fmtDate(state.date);
+  if (state.rangeMode === 'week' && state.date)  return `Week of ${fmtShort(state.date)}`;
+  if (state.rangeMode === 'range') {
+    return (state.rangeStart && state.rangeEnd)
+      ? `${fmtShort(state.rangeStart)} – ${fmtShort(state.rangeEnd)}`
+      : 'Custom range';
+  }
+  return monthLabel(state.month);
+}
+
+function rangeFileSuffix() {
+  if (state.rangeMode === 'day')   return state.date;
+  if (state.rangeMode === 'week')  return `week_${state.date}`;
+  if (state.rangeMode === 'month') return state.month;
+  if (state.rangeMode === 'range') return `${state.rangeStart}_to_${state.rangeEnd}`;
+  return 'data';
+}
+
+/* ==========================================================
+   Login / session
+   ========================================================== */
+function startApp() {
+  $('#login-root').classList.add('d-none');
+  $('#app-root').classList.remove('d-none');
+  updateUserChip();
+  route();
+}
+
+function showLogin() {
+  $('#app-root').classList.add('d-none');
+  $('#login-root').classList.remove('d-none');
+  renderLogin();
+}
+
+function updateUserChip() {
+  const s = getSession();
+  if (!s) return;
+  const nameEl = document.getElementById('user-name');
+  const courseEl = document.getElementById('user-course');
+  if (nameEl) nameEl.textContent = s.name || s.user || 'User';
+  if (courseEl) courseEl.textContent = s.course || '—';
+}
+
+function renderLogin() {
+  const courses = APP_CONFIG.courses;
+  let selectedCourse = state._pendingCourse || APP_CONFIG.defaultCourse;
+  let selectedSem    = state._pendingSem || APP_CONFIG.defaultSem;
+
+  $('#login-root').innerHTML = `
+    <div class="login-page">
+      <div class="login-card anim-in">
+        <div class="login-brand">
+          <div class="brand-badge"><i class="bi bi-bar-chart-steps fs-5"></i></div>
+          <div>
+            <h5 class="fw-bold mb-0">Attendance Analytics</h5>
+            <span class="text-muted small">Computer Engineering · 2026–27</span>
+          </div>
+        </div>
+
+        <h6 class="text-uppercase small text-muted fw-bold mt-4 mb-2">Sign In</h6>
+        <div class="mb-3">
+          <label class="form-label small fw-semibold text-muted">Username or Email</label>
+          <input id="lg-user" class="form-control" autocomplete="username" placeholder="e.g. hod or co2024.smit">
+        </div>
+        <div class="mb-3">
+          <label class="form-label small fw-semibold text-muted">Password</label>
+          <input id="lg-pass" type="password" class="form-control" autocomplete="current-password" placeholder="••••••••">
+        </div>
+        <div id="lg-error" class="alert alert-danger py-2 small d-none"></div>
+
+        <h6 class="text-uppercase small text-muted fw-bold mt-4 mb-2">Course</h6>
+        <div class="course-grid">
+          ${courses.map(c => `
+            <button type="button"
+              class="course-chip ${c.enabled ? '' : 'is-disabled'} ${c.code === selectedCourse ? 'selected' : ''}"
+              data-course="${c.code}" ${c.enabled ? '' : 'disabled'}>
+              <span class="fw-bold d-block">${c.code}</span>
+              <span class="d-block small text-muted">${esc(c.name)}</span>
+            </button>
+          `).join('')}
+        </div>
+
+        <h6 class="text-uppercase small text-muted fw-bold mt-4 mb-2">Semester</h6>
+        <div class="sem-toggle">
+          <button type="button" class="sem-btn ${selectedSem === 'odd' ? 'active' : ''}" data-sem="odd">Odd</button>
+          <button type="button" class="sem-btn is-disabled" data-sem="even" disabled>Even <span class="small">(coming soon)</span></button>
+        </div>
+
+        <button id="lg-submit" class="btn btn-primary w-100 mt-4">
+          <i class="bi bi-box-arrow-in-right me-1"></i>Sign In
+        </button>
+        <p class="text-muted small text-center mt-3 mb-0">
+          <i class="bi bi-shield-lock me-1"></i>Authorized personnel only · Session expires after 8 hours
+        </p>
+      </div>
+    </div>`;
+
+  const refreshCourseUI = () => {
+    $('#login-root').querySelectorAll('.course-chip').forEach(b => {
+      if (b.disabled) return;
+      b.classList.toggle('selected', b.dataset.course === selectedCourse);
+    });
+  };
+
+  $('#login-root').querySelectorAll('.course-chip').forEach(b => {
+    if (b.disabled) return;
+    b.onclick = () => { selectedCourse = b.dataset.course; refreshCourseUI(); };
+  });
+  $('#login-root').querySelectorAll('.sem-btn').forEach(b => {
+    if (b.disabled) return;
+    b.onclick = () => {
+      selectedSem = b.dataset.sem;
+      $('#login-root').querySelectorAll('.sem-btn').forEach(x => x.classList.toggle('active', x === b));
+    };
+  });
+
+  const submit = () => {
+    const u = $('#lg-user').value.trim();
+    const p = $('#lg-pass').value;
+    const err = $('#lg-error');
+    err.classList.add('d-none');
+
+    if (!u || !p) { err.textContent = 'Enter username and password.'; err.classList.remove('d-none'); return; }
+    const user = AUTHORIZED_USERS.find(x =>
+      (x.id === u || x.email === u) && x.password === p
+    );
+    if (!user) { err.textContent = 'Invalid credentials.'; err.classList.remove('d-none'); return; }
+    if (user.course !== selectedCourse) {
+      err.textContent = `Your account is not authorised for ${selectedCourse}.`;
+      err.classList.remove('d-none'); return;
+    }
+
+    setSession({
+      user: user.id, name: user.name, role: user.role,
+      course: selectedCourse, sem: selectedSem, loginTime: Date.now()
+    });
+    state._pendingCourse = null;
+    state._pendingSem = null;
+    startApp();
+    toast(`Welcome, ${user.name}`);
+  };
+  $('#lg-submit').onclick = submit;
+  $('#lg-pass').addEventListener('keydown', e => { if (e.key === 'Enter') submit(); });
+}
+
+/* ==========================================================
+   Dashboard helpers
+   ========================================================== */
 function statCard(label, value, tone, icon, sub, opts = {}) {
   const progressHtml = (opts.progress !== undefined)
     ? `<div class="threshold mt-3">
@@ -119,12 +371,12 @@ function chartColors() {
 /* ==========================================================
    DASHBOARD
    ========================================================== */
-function slotAttendanceSlidesHTML() {
+function slotAttendanceSlidesHTML(displayDate) {
   return SEMESTERS.map(sem => {
-    const slots = slotsForDate(state.date, sem);
-    const rows  = getDailyRows(state.date, sem);
+    const slots = slotsForDate(displayDate, sem);
+    const rows  = getDailyRows(displayDate, sem);
     return `<div class="carousel-item">
-      <h6 class="fw-bold mb-3"><i class="bi bi-clock-history text-primary me-2"></i>Slot Attendance — ${SEM_META[sem].code} — ${state.date ? fmtShort(state.date) : ''}</h6>
+      <h6 class="fw-bold mb-3"><i class="bi bi-clock-history text-primary me-2"></i>Slot Attendance — ${SEM_META[sem].code} — ${displayDate ? fmtShort(displayDate) : ''}</h6>
       <div class="d-flex flex-column gap-3">
         ${slots.length ? slots.map(s => {
           const r = slotPresentRate(rows, s.slot);
@@ -143,15 +395,20 @@ function slotAttendanceSlidesHTML() {
 }
 
 function renderDashboard() {
-  const ym = state.month;
-  const dateForDaily = state.date && monthKeyOf(state.date) === ym ? state.date : (datesInMonth(ym).slice(-1)[0] || state.date);
+  const rangeDates = getRangeDates();
+  const rangeDateSet = new Set(rangeDates);
+  const displayDate = rangeDateSet.has(state.date)
+    ? state.date
+    : (rangeDates[rangeDates.length - 1] || state.date);
+
+  const rangeRecords = recordsInDates(rangeDates);
 
   const scopedRows = () => {
     const rolls = state.semester === 'all'
       ? new Set(SEMESTERS.flatMap(s => studentsOf(s).map(x => x.rollNo)))
       : new Set(studentsOf(+state.semester).map(s => s.rollNo));
     const byRoll = {};
-    recordsInMonth(ym).filter(r => rolls.has(r.rollNo)).forEach(r => {
+    rangeRecords.filter(r => rolls.has(r.rollNo)).forEach(r => {
       (byRoll[r.rollNo] = byRoll[r.rollNo] || []).push(r);
     });
     return Object.entries(byRoll).map(([rollNo, recs]) => {
@@ -168,20 +425,19 @@ function renderDashboard() {
 
   $('#view').innerHTML = `
     <div class="content-card mb-4 anim-in">
-      <div class="d-flex flex-wrap justify-content-between align-items-center gap-3">
+      <div class="d-flex flex-wrap justify-content-between align-items-end gap-3">
         <div>
           <div class="stat-label">Academic Year 2026–27 · Computer Engineering</div>
           <h4 class="fw-bold mb-1 mt-2">Attendance Analytics</h4>
           <p class="text-muted small mb-0">
-            <i class="bi bi-calendar3 me-1"></i>${monthLabel(ym)} ·
+            <i class="bi bi-calendar3 me-1"></i>${rangeLabel()} ·
             <strong>${rows.length}</strong> student-day records ·
             <span class="text-success ms-1"><i class="bi bi-check-circle-fill"></i> Last updated ${fmtShort(lastUpdated)}</span>
           </p>
         </div>
-        <div class="d-flex flex-wrap gap-2 align-items-center">
-          <select id="f-month" class="form-select form-select-sm" style="width:auto">${monthOptions()}</select>
-          <select id="f-date"  class="form-select form-select-sm" style="width:auto">${optionsHTML(DATES.map(d => [d, fmtDate(d)]), dateForDaily)}</select>
-          <select id="f-sem"   class="form-select form-select-sm" style="width:auto">${semOptions()}</select>
+        <div class="d-flex flex-wrap gap-2 align-items-end">
+          ${scopeSelectorHTML('f')}
+          <select id="f-sem" class="form-select form-select-sm" style="width:auto">${semOptions()}</select>
           <button id="btn-manage" class="btn btn-primary btn-sm text-nowrap">
             <i class="bi bi-gear-fill me-1"></i>Manage
           </button>
@@ -195,20 +451,20 @@ function renderDashboard() {
       ${statCard('Absent',  c.Absent,  'danger',  'x-circle-fill',    'Absent all day')}
       ${statCard('Late',    c.Late,    'warning', 'clock-history',    'Missed first slot')}
       ${statCard('Bunk',    c.Bunk,    'bunk',    'exclamation-triangle-fill', 'Missed mid-day slot(s)')}
-      ${statCard('Attendance Rate', rate + '%', 'info', 'pie-chart-fill', `Threshold ${ATTENDANCE_THRESHOLD}% · ${monthLabel(ym)}`, { progress: rate })}
+      ${statCard('Attendance Rate', rate + '%', 'info', 'pie-chart-fill', `Threshold ${ATTENDANCE_THRESHOLD}% · ${rangeLabel()}`, { progress: rate })}
     </div>
     <div class="row g-4 mb-4">
       <div class="col-12 col-lg-8 anim-in anim-in-d1"><div class="content-card h-100">
         <div class="d-flex justify-content-between align-items-center mb-3">
-          <h6 class="fw-bold mb-0"><i class="bi bi-graph-up text-primary me-2"></i>Daily Trend — ${monthLabel(ym)}</h6>
-          <span class="badge bg-secondary-subtle text-secondary">${datesInMonth(ym).length} day(s)</span>
+          <h6 class="fw-bold mb-0"><i class="bi bi-graph-up text-primary me-2"></i>Daily Trend — ${rangeLabel()}</h6>
+          <span class="badge bg-secondary-subtle text-secondary">${rangeDates.length} day(s)</span>
         </div>
         <div style="height:280px;position:relative"><canvas id="c-trend"></canvas></div>
       </div></div>
       <div class="col-12 col-lg-4 anim-in anim-in-d2"><div class="content-card h-100 d-flex flex-column">
         <div class="d-flex justify-content-between align-items-center mb-3">
           <h6 class="fw-bold mb-0"><i class="bi bi-pie-chart text-info me-2"></i>Status Breakdown</h6>
-          <span class="badge bg-secondary-subtle text-secondary">${monthLabel(ym)}</span>
+          <span class="badge bg-secondary-subtle text-secondary">${rangeLabel()}</span>
         </div>
         <div style="height:220px;position:relative"><canvas id="c-dist"></canvas></div>
         <div class="row g-2 text-center mt-3">
@@ -230,7 +486,7 @@ function renderDashboard() {
     <div class="row g-4 mb-4">
       <div class="col-12 col-lg-6 anim-in anim-in-d3"><div class="content-card h-100">
         <div class="d-flex justify-content-between align-items-center mb-3">
-          <h6 class="fw-bold mb-0"><i class="bi bi-bar-chart-line text-success me-2"></i>Semester-wise — ${monthLabel(ym)}</h6>
+          <h6 class="fw-bold mb-0"><i class="bi bi-bar-chart-line text-success me-2"></i>Semester-wise — ${rangeLabel()}</h6>
           <span class="badge bg-secondary-subtle text-secondary">CO1 vs CO3 vs CO5</span>
         </div>
         <div style="height:250px;position:relative"><canvas id="c-sem"></canvas></div>
@@ -238,7 +494,7 @@ function renderDashboard() {
       <div class="col-12 col-lg-6 anim-in anim-in-d4"><div class="content-card h-100">
         <div class="d-flex justify-content-between align-items-center mb-3">
           <h6 class="fw-bold mb-0"><i class="bi bi-book text-info me-2"></i>Subject-wise — ${SEM_META[refSem].code}</h6>
-          <span class="badge bg-secondary-subtle text-secondary">${monthLabel(ym)}</span>
+          <span class="badge bg-secondary-subtle text-secondary">${rangeLabel()}</span>
         </div>
         <div style="height:250px;position:relative"><canvas id="c-subject"></canvas></div>
       </div></div>
@@ -248,7 +504,7 @@ function renderDashboard() {
         <div id="slotCarousel" class="carousel slide" data-bs-ride="carousel">
           <div class="carousel-inner">
             ${(() => {
-              const html = slotAttendanceSlidesHTML();
+              const html = slotAttendanceSlidesHTML(displayDate);
               return html.replace('class="carousel-item"', 'class="carousel-item active"');
             })()}
           </div>
@@ -263,11 +519,11 @@ function renderDashboard() {
       <div class="col-12 col-lg-6 anim-in anim-in-d5"><div class="content-card h-100">
         <div class="d-flex justify-content-between align-items-center mb-3">
           <h6 class="fw-bold mb-0"><i class="bi bi-exclamation-triangle-fill text-danger me-2"></i>Defaulters (below ${ATTENDANCE_THRESHOLD}%) — ${SEM_META[refSem].code}</h6>
-          <span class="badge bg-danger-subtle text-danger">${monthLabel(ym)}</span>
+          <span class="badge bg-danger-subtle text-danger">${rangeLabel()}</span>
         </div>
         ${(() => {
-          const list = defaulterList(refSem, ym);
-          if (!list.length) return `<p class="text-muted small mb-0">No defaulters in this month. 🎉</p>`;
+          const list = defaulterListForDates(refSem, rangeDates);
+          if (!list.length) return `<p class="text-muted small mb-0">No defaulters in this period. 🎉</p>`;
           return `<div class="table-responsive"><table class="table table-sm align-middle mb-0">
             <thead><tr><th>Roll No.</th><th>Name</th><th class="text-center">%</th><th class="text-end"></th></tr></thead>
             <tbody>${list.map(x => `<tr class="row-danger">
@@ -281,9 +537,8 @@ function renderDashboard() {
       </div></div>
     </div>`;
 
-  $('#f-month').onchange = e => { state.month = e.target.value; render(); };
-  $('#f-date').onchange  = e => { state.date  = e.target.value; render(); };
-  $('#f-sem').onchange   = e => { state.semester = e.target.value; render(); };
+  bindScopeSelector('f', render);
+  $('#f-sem').onchange = e => { state.semester = e.target.value; render(); };
   $('#btn-manage').onclick = openManageModal;
   $('#view').querySelectorAll('[data-jump-roll]').forEach(b => {
     b.onclick = () => {
@@ -295,17 +550,16 @@ function renderDashboard() {
     };
   });
 
-  drawDashboardCharts(c, rows, ym, refSem);
+  drawDashboardCharts(c, rows, rangeDates, refSem);
 }
 
-function drawDashboardCharts(c, rows, ym, refSem) {
+function drawDashboardCharts(c, rows, rangeDates, refSem) {
   const { text, grid } = chartColors();
   const base = { responsive: true, maintainAspectRatio: false };
-  const monthDates = datesInMonth(ym);
   const scopeRolls = state.semester === 'all'
     ? new Set(SEMESTERS.flatMap(s => studentsOf(s).map(x => x.rollNo)))
     : new Set(studentsOf(+state.semester).map(s => s.rollNo));
-  const perDate = monthDates.map(d => getDailyRows(d).filter(r => scopeRolls.has(r.rollNo)));
+  const perDate = rangeDates.map(d => getDailyRows(d).filter(r => scopeRolls.has(r.rollNo)));
 
   const tooltipCommon = {
     backgroundColor: state.theme === 'dark' ? '#0b1120' : '#0f172a',
@@ -317,7 +571,7 @@ function drawDashboardCharts(c, rows, ym, refSem) {
   charts.push(new Chart($('#c-trend'), {
     type: 'line',
     data: {
-      labels: monthDates.map(fmtShort),
+      labels: rangeDates.map(fmtShort),
       datasets: [
         {
           label: 'Attendance %',
@@ -331,7 +585,7 @@ function drawDashboardCharts(c, rows, ym, refSem) {
         },
         {
           label: `Threshold (${ATTENDANCE_THRESHOLD}%)`,
-          data: monthDates.map(() => ATTENDANCE_THRESHOLD),
+          data: rangeDates.map(() => ATTENDANCE_THRESHOLD),
           borderColor: '#ef4444', borderDash: [6, 4], borderWidth: 1.6,
           pointRadius: 0, pointHoverRadius: 0, fill: false, tension: 0
         }
@@ -370,13 +624,14 @@ function drawDashboardCharts(c, rows, ym, refSem) {
       } }
   }));
 
+  const semRates = SEMESTERS.map(sem => semStatsForDates(sem, rangeDates).pct);
   charts.push(new Chart($('#c-sem'), {
     type: 'bar',
     data: {
       labels: SEMESTERS.map(s => SEM_META[s].code),
       datasets: [{
         label: 'Attendance %',
-        data: SEMESTERS.map(s => monthlySemStats(s, ym).pct),
+        data: semRates,
         backgroundColor: ['#60a5fa', '#34d399', '#a78bfa'],
         borderRadius: 8, maxBarThickness: 60
       }]
@@ -392,7 +647,7 @@ function drawDashboardCharts(c, rows, ym, refSem) {
     }
   }));
 
-  const subjects = subjectStatsForSem(refSem, ym);
+  const subjects = subjectStatsForSemDates(refSem, rangeDates);
   charts.push(new Chart($('#c-subject'), {
     type: 'bar',
     data: {
@@ -416,12 +671,12 @@ function drawDashboardCharts(c, rows, ym, refSem) {
 }
 
 /* ==========================================================
-   MARK ATTENDANCE
+   MARK ATTENDANCE  — date comes from state.date (shared)
    ========================================================== */
 function renderMarkAttendance() {
-  const sem = state.markSem;
-  const date = state.markDate;
-  const day = weekdayOf(date);
+  const sem  = state.markSem;
+  const date = state.date;
+  const day  = weekdayOf(date);
   const slots = timetableOf(sem)[day] || [];
   const studs = studentsOf(sem).slice().sort((a, b) =>
     a.rollNo.localeCompare(b.rollNo, undefined, { numeric: true }));
@@ -450,25 +705,43 @@ function renderMarkAttendance() {
     </div>
     ${banner()}
     <div class="content-card mb-4 no-print anim-in anim-in-d1">
-      <div class="row g-3 align-items-end">
-        <div class="col-12 col-md-3"><label class="form-label small fw-semibold text-muted">Semester</label>
-          <select id="mk-sem" class="form-select">${optionsHTML(SEMESTERS.map(s => [s, SEM_META[s].label]), sem)}</select></div>
-        <div class="col-12 col-md-3"><label class="form-label small fw-semibold text-muted">Date</label>
-          <input type="date" id="mk-date" class="form-control" value="${date}"></div>
-        <div class="col-12 col-md-6 d-flex align-items-end justify-content-between gap-3 flex-wrap">
-          <span class="text-muted small"><i class="bi bi-calendar-week me-1"></i>${day} • ${slots.length} slot(s) • ${studs.length} student(s)</span>
-          ${legendHTML}
+      <div class="row g-3 align-items-end mb-3">
+        <div class="col-12 col-md-auto">
+          <label class="form-label small fw-semibold text-muted mb-0">Semester</label>
+          <select id="mk-sem" class="form-select form-select-sm" style="min-width:170px">${optionsHTML(SEMESTERS.map(s => [s, SEM_META[s].label]), sem)}</select>
         </div>
+        <div class="col-12 col-md">
+          ${scopeSelectorHTML('mk')}
+        </div>
+      </div>
+      ${dayChipStripHTML(date)}
+      <div class="d-flex justify-content-between align-items-center gap-3 flex-wrap">
+        <span class="text-muted small">
+          <i class="bi bi-calendar-week me-1"></i>${day} • ${slots.length} slot(s) • ${studs.length} student(s)
+        </span>
+        ${legendHTML}
       </div>
     </div>
     ${slots.length ? `
       <div class="content-card anim-in anim-in-d2">
         <div class="d-flex flex-wrap gap-2 mb-3 align-items-center">
           <div id="mk-summary" class="att-summary">
-            <div class="att-summary-item"><span class="val text-success" data-stat="P">0</span><span class="lbl">Present</span></div>
-            <div class="att-summary-item"><span class="val text-danger"  data-stat="A">0</span><span class="lbl">Absent</span></div>
-            <div class="att-summary-item"><span class="val text-warning" data-stat="L">0</span><span class="lbl">Late</span></div>
-            <div class="att-summary-item"><span class="val text-bunk"    data-stat="B">0</span><span class="lbl">Bunk</span></div>
+            <button type="button" class="att-summary-item" data-mk-filter="P">
+              <span class="val text-success" data-stat="P">0</span>
+              <span class="lbl">Present</span>
+            </button>
+            <button type="button" class="att-summary-item" data-mk-filter="A">
+              <span class="val text-danger"  data-stat="A">0</span>
+              <span class="lbl">Absent</span>
+            </button>
+            <button type="button" class="att-summary-item" data-mk-filter="L">
+              <span class="val text-warning" data-stat="L">0</span>
+              <span class="lbl">Late</span>
+            </button>
+            <button type="button" class="att-summary-item" data-mk-filter="B">
+              <span class="val text-bunk"    data-stat="B">0</span>
+              <span class="lbl">Bunk</span>
+            </button>
           </div>
           <div class="ms-auto d-flex gap-2 flex-wrap">
             <button id="mk-all-p" class="btn btn-sm btn-outline-success"><i class="bi bi-check-all me-1"></i>Mark all Present</button>
@@ -516,8 +789,9 @@ function renderMarkAttendance() {
     el.querySelector('[data-stat="B"]').textContent = counts.B;
   }
 
-  $('#mk-sem').onchange  = e => { state.markSem  = +e.target.value; renderMarkAttendance(); };
-  $('#mk-date').onchange = e => { state.markDate = e.target.value;  renderMarkAttendance(); };
+  $('#mk-sem').onchange = e => { state.markSem = +e.target.value; renderMarkAttendance(); };
+  bindScopeSelector('mk', renderMarkAttendance);
+  bindDayChipStrip(d => { /* re-render */ renderMarkAttendance(); });
 
   $('#view').querySelectorAll('.att-cell').forEach(btn => {
     btn.onclick = () => {
@@ -548,6 +822,10 @@ function renderMarkAttendance() {
     $('#view').querySelectorAll('.att-cell').forEach(c => { c.dataset.status = ''; c.textContent = '—'; });
     updateMarkSummary();
   };
+  $('#view').querySelectorAll('[data-mk-filter]').forEach(b => {
+    b.onclick = () => openMarkStatusModal(b.dataset.mkFilter);
+  });
+
   const save = () => {
     const rollSet2 = new Set(studs.map(s => s.rollNo));
     for (let i = RECORDS.length - 1; i >= 0; i--) {
@@ -561,8 +839,7 @@ function renderMarkAttendance() {
       count++;
     });
     saveAll();
-    alert(`Saved ${count} attendance record(s) for ${date}.`);
-    state.date = date;
+    toast(`Saved ${count} attendance record(s) for ${date}.`);
     state.month = monthKeyOf(date);
     render();
   };
@@ -570,6 +847,51 @@ function renderMarkAttendance() {
   if ($('#mk-save2')) $('#mk-save2').onclick = save;
 
   updateMarkSummary();
+}
+
+function openMarkStatusModal(letter) {
+  const date = state.date;
+  const sem = state.markSem;
+  const stMap = { P: 'Present', A: 'Absent', L: 'Late', B: 'Bunk' };
+  const toneMap = { P: 'success', A: 'danger', L: 'warning', B: 'bunk' };
+  const slotList = timetableOf(sem)[weekdayOf(date)] || [];
+
+  const rows = [];
+  $('#view').querySelectorAll('.att-cell').forEach(c => {
+    if (c.dataset.status !== letter) return;
+    const st = findStudent(c.dataset.roll);
+    const slot = slotList.find(s => s.slot === c.dataset.slot);
+    const subject = slot ? getLabSubjectForStudent(c.dataset.roll, slot) : (c.dataset.slot || '—');
+    rows.push({
+      roll: c.dataset.roll,
+      name: st ? st.name : c.dataset.roll,
+      slot: c.dataset.slot,
+      subject,
+      status: letter
+    });
+  });
+
+  rows.sort((a, b) => a.roll.localeCompare(b.roll, undefined, { numeric: true })
+                     || a.slot.localeCompare(b.slot));
+
+  const body = rows.length ? `
+    <div class="mb-3 text-muted small">
+      <i class="bi bi-calendar3 me-1"></i>${fmtDate(date)} · ${SEM_META[sem].code} · ${rows.length} record(s)
+    </div>
+    <div class="table-responsive">
+      <table class="table table-sm align-middle mb-0">
+        <thead><tr><th>Roll No.</th><th>Name</th><th>Slot</th><th>Subject</th><th>Status</th></tr></thead>
+        <tbody>${rows.map(r => `<tr>
+          <td class="fw-semibold text-primary">${esc(r.roll)}</td>
+          <td>${esc(r.name)}</td>
+          <td class="text-muted small">${esc(r.slot)}</td>
+          <td>${esc(r.subject)}</td>
+          <td>${statusBadge(stMap[r.status])}</td>
+        </tr>`).join('')}</tbody>
+      </table>
+    </div>` : emptyBox('No entries with this status.');
+
+  openListModal(`${stMap[letter]} — ${rows.length}`, body, toneMap[letter]);
 }
 
 /* ==========================================================
@@ -589,12 +911,29 @@ function renderDaily() {
   const allRows = getDailyRows(state.date, state.semester === 'all' ? null : +state.semester);
   const sc = countByStatus(allRows);
 
+  /* Range-wide summary (only when scope != day) */
+  const rangeDates = getRangeDates();
+  const rangeRows = (() => {
+    if (state.rangeMode === 'day') return null;
+    const rolls = state.semester === 'all'
+      ? new Set(SEMESTERS.flatMap(s => studentsOf(s).map(x => x.rollNo)))
+      : new Set(studentsOf(+state.semester).map(s => s.rollNo));
+    const byRoll = {};
+    recordsInDates(rangeDates).filter(r => rolls.has(r.rollNo)).forEach(r => {
+      (byRoll[r.rollNo] = byRoll[r.rollNo] || []).push(r);
+    });
+    const rows = Object.entries(byRoll).map(([rollNo, recs]) => ({
+      rollNo, records: recs, ...classifyDay(recs)
+    }));
+    return { rows, counts: countByStatus(rows), rate: overallRate(rows), dates: rangeDates.length };
+  })();
+
   $('#view').innerHTML = `
     <div class="d-flex flex-wrap justify-content-between align-items-center mb-4 gap-3 anim-in">
       <div>
         <div class="stat-label">Monitoring</div>
         <h4 class="fw-bold mb-1 mt-2">Daily Attendance</h4>
-        <p class="text-muted small mb-0">${weekdayOf(state.date)} • ${daySlots.length} slot(s) — ${SEM_META[refSem].code}</p>
+        <p class="text-muted small mb-0">${weekdayOf(state.date)} · ${daySlots.length} slot(s) — ${SEM_META[refSem].code} · Scope: ${rangeLabel()}</p>
       </div>
       <div class="d-flex gap-2 no-print">
         <button id="btn-csv" class="btn btn-outline-secondary btn-sm"><i class="bi bi-filetype-csv me-1"></i>Export CSV</button>
@@ -603,25 +942,64 @@ function renderDaily() {
     </div>
     ${banner()}
     <div class="content-card mb-4 no-print anim-in anim-in-d1">
-      <div class="row g-3">
-        <div class="col-12 col-md-3"><label class="form-label small fw-semibold text-muted">Date</label>
-          <select id="f-date" class="form-select">${dateOptions()}</select></div>
-        <div class="col-12 col-md-3"><label class="form-label small fw-semibold text-muted">Semester</label>
-          <select id="f-sem" class="form-select">${semOptions()}</select></div>
-        <div class="col-12 col-md-3"><label class="form-label small fw-semibold text-muted">Status</label>
-          <select id="f-status" class="form-select">${statusOptions()}</select></div>
-        <div class="col-12 col-md-3"><label class="form-label small fw-semibold text-muted">Search</label>
-          <div class="input-group"><span class="input-group-text"><i class="bi bi-search"></i></span>
-          <input id="f-search" type="text" class="form-control" placeholder="Roll No or Name..." value="${esc(state.search)}"></div></div>
+      <div class="row g-3 align-items-end mb-3">
+        <div class="col-12 col-md">
+          ${scopeSelectorHTML('dl')}
+        </div>
+        <div class="col-12 col-md-auto">
+          <label class="form-label small fw-semibold text-muted mb-0">Semester</label>
+          <select id="f-sem" class="form-select form-select-sm" style="min-width:170px">${semOptions()}</select>
+        </div>
+        <div class="col-12 col-md-auto">
+          <label class="form-label small fw-semibold text-muted mb-0">Status</label>
+          <select id="f-status" class="form-select form-select-sm" style="min-width:170px">${statusOptions()}</select>
+        </div>
+        <div class="col-12 col-md">
+          <label class="form-label small fw-semibold text-muted mb-0">Search</label>
+          <div class="input-group input-group-sm">
+            <span class="input-group-text"><i class="bi bi-search"></i></span>
+            <input id="f-search" type="text" class="form-control" placeholder="Roll No or Name..." value="${esc(state.search)}">
+          </div>
+        </div>
       </div>
+      ${dayChipStripHTML(state.date)}
       <div class="daily-summary mt-3 pt-3" style="border-top:1px solid var(--border-color)">
-        <div class="ds-item"><span class="ds-val text-success">${sc.Present}</span><span class="ds-lbl">Present</span></div>
-        <div class="ds-item"><span class="ds-val text-danger">${sc.Absent}</span><span class="ds-lbl">Absent</span></div>
-        <div class="ds-item"><span class="ds-val text-warning">${sc.Late}</span><span class="ds-lbl">Late</span></div>
-        <div class="ds-item"><span class="ds-val text-bunk">${sc.Bunk}</span><span class="ds-lbl">Bunk</span></div>
+        <button type="button" class="ds-item ds-clickable" data-ds="Present"><span class="ds-val text-success">${sc.Present}</span><span class="ds-lbl">Present</span></button>
+        <button type="button" class="ds-item ds-clickable" data-ds="Absent"><span class="ds-val text-danger">${sc.Absent}</span><span class="ds-lbl">Absent</span></button>
+        <button type="button" class="ds-item ds-clickable" data-ds="Late"><span class="ds-val text-warning">${sc.Late}</span><span class="ds-lbl">Late</span></button>
+        <button type="button" class="ds-item ds-clickable" data-ds="Bunk"><span class="ds-val text-bunk">${sc.Bunk}</span><span class="ds-lbl">Bunk</span></button>
         <div class="ds-item ms-auto"><span class="ds-val text-primary">${allRows.length}</span><span class="ds-lbl">Total</span></div>
       </div>
     </div>
+    ${rangeRows ? `
+      <div class="content-card mb-4 anim-in anim-in-d2">
+        <div class="d-flex justify-content-between align-items-center mb-3">
+          <h6 class="fw-bold mb-0"><i class="bi bi-bar-chart-line text-primary me-2"></i>Range Summary — ${rangeLabel()}</h6>
+          <span class="badge bg-secondary-subtle text-secondary">${rangeRows.dates} day(s)</span>
+        </div>
+        <div class="row g-3 text-center">
+          <div class="col-6 col-md-2"><div class="p-3 rounded" style="background:var(--bg-body)">
+            <span class="stat-label d-block">Present</span>
+            <h5 class="fw-bold mt-1 mb-0 text-success">${rangeRows.counts.Present}</h5>
+          </div></div>
+          <div class="col-6 col-md-2"><div class="p-3 rounded" style="background:var(--bg-body)">
+            <span class="stat-label d-block">Absent</span>
+            <h5 class="fw-bold mt-1 mb-0 text-danger">${rangeRows.counts.Absent}</h5>
+          </div></div>
+          <div class="col-6 col-md-2"><div class="p-3 rounded" style="background:var(--bg-body)">
+            <span class="stat-label d-block">Late</span>
+            <h5 class="fw-bold mt-1 mb-0 text-warning">${rangeRows.counts.Late}</h5>
+          </div></div>
+          <div class="col-6 col-md-2"><div class="p-3 rounded" style="background:var(--bg-body)">
+            <span class="stat-label d-block">Bunk</span>
+            <h5 class="fw-bold mt-1 mb-0 text-bunk">${rangeRows.counts.Bunk}</h5>
+          </div></div>
+          <div class="col-12 col-md-4"><div class="p-3 rounded" style="background:var(--bg-body)">
+            <span class="stat-label d-block">Attendance Rate</span>
+            <h5 class="fw-bold mt-1 mb-0 text-primary">${rangeRows.rate}%</h5>
+          </div></div>
+        </div>
+      </div>` : ''}
     <div class="content-card anim-in anim-in-d2">
       <div class="mb-3"><span class="text-muted small" id="daily-count"></span></div>
       <div class="table-responsive sticky-scroll">
@@ -636,7 +1014,8 @@ function renderDaily() {
       </div>
     </div>`;
 
-  $('#f-date').onchange   = e => { state.date = e.target.value; renderDaily(); };
+  bindScopeSelector('dl', renderDaily);
+  bindDayChipStrip(() => renderDaily());
   $('#f-sem').onchange    = e => { state.semester = e.target.value; renderDaily(); };
   $('#f-status').onchange = e => { state.status = e.target.value; updateDaily(); };
   $('#f-search').oninput  = e => { state.search = e.target.value; updateDaily(); };
@@ -651,6 +1030,9 @@ function renderDaily() {
     state.analysisView = 'detail';
     location.hash = '#analysis';
   };
+  $('#view').querySelectorAll('[data-ds]').forEach(b => {
+    b.onclick = () => openDailyStatusModal(b.dataset.ds);
+  });
   updateDaily();
 }
 
@@ -668,7 +1050,7 @@ function updateDaily() {
   $('#daily-body').innerHTML = rows.map(r => {
     const missedNames = r.missed.map(sl => {
       const s = daySlots.find(x => x.slot === sl);
-      return s ? s.subject : sl;
+      return s ? getLabSubjectForStudent(r.rollNo, s) : sl;
     });
     const isIssue = r.status === 'Absent' || r.status === 'Bunk' || r.status === 'Late';
     return `<tr class="${isIssue ? 'row-danger' : ''}">
@@ -686,6 +1068,39 @@ function updateDaily() {
   }).join('');
 }
 
+function openDailyStatusModal(dayStatus) {
+  const refSem = refSemester();
+  const daySlots = slotsForDate(state.date, refSem);
+  const allRows = getDailyRows(state.date, state.semester === 'all' ? null : +state.semester);
+  const rows = allRows.filter(r => r.status === dayStatus);
+
+  const body = rows.length ? `
+    <div class="mb-3 text-muted small">
+      <i class="bi bi-calendar3 me-1"></i>${fmtDate(state.date)} · ${SEM_META[refSem].code} · ${rows.length} student(s)
+    </div>
+    <div class="table-responsive">
+      <table class="table table-sm align-middle mb-0">
+        <thead><tr>
+          <th>Roll No.</th><th>Name</th>
+          ${daySlots.map(s => `<th class="text-center small">${esc(s.subject)}<br><span class="text-muted fw-normal">${s.slot}</span></th>`).join('')}
+          <th>Status</th>
+        </tr></thead>
+        <tbody>${rows.map(r => `<tr>
+          <td class="fw-semibold text-primary">${esc(r.rollNo)}</td>
+          <td>${esc(r.name)}</td>
+          ${daySlots.map(s => {
+            const rec = r.records.find(x => x.slot === s.slot);
+            return `<td class="text-center">${rec ? slotPill(rec.status) : '<span class="text-muted">—</span>'}</td>`;
+          }).join('')}
+          <td>${statusBadge(r.status)}</td>
+        </tr>`).join('')}</tbody>
+      </table>
+    </div>` : emptyBox('No students with this status.');
+
+  const toneMap = { Present: 'success', Absent: 'danger', Late: 'warning', Bunk: 'bunk' };
+  openListModal(`${dayStatus} — ${rows.length}`, body, toneMap[dayStatus] || 'primary');
+}
+
 function exportDailyCSV(rows, daySlots) {
   const head = ['Roll No','Name','Semester','Date',
                 ...daySlots.map(s => `${s.subject} (${s.slot})`), 'Status','Missed Slots'];
@@ -700,7 +1115,7 @@ function exportDailyCSV(rows, daySlots) {
 }
 
 /* ==========================================================
-   TIMETABLE — weekly, per-semester
+   TIMETABLE — weekly, per-semester (original 6-slot layout)
    ========================================================== */
 const TT_DAYS = ['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
 const TT_TIME_LABELS = ['09:15–10:15','10:15–11:15','11:30–12:30','12:30–13:30','14:00–15:00','15:00–16:00'];
@@ -764,7 +1179,7 @@ function renderTimetable() {
       <div>
         <div class="stat-label">Weekly Schedule</div>
         <h4 class="fw-bold mb-1 mt-2">${SEM_META[sem].label} — Timetable</h4>
-        <p class="text-muted small mb-0">Click a cell to change the subject. Use <strong>Manage</strong> for full control.</p>
+        <p class="text-muted small mb-0">Lab slots show per-batch subjects. Click a cell to change the subject.</p>
       </div>
       <div class="d-flex gap-3 align-items-center flex-wrap">
         <div class="tt-legend">
@@ -786,7 +1201,8 @@ function renderTimetable() {
       </div>
       <p class="text-muted small mt-3 mb-0">
         <i class="bi bi-info-circle me-1"></i>
-        Labs occupy 2-hour windows: 9:15–11:15, 11:30–1:30, 2:00–4:00. Breaks and Library Hour are not attendance units.
+        3-lab slots use batch split (A: 1–23, B: 24–46, C: 47–69). 2-lab slots use (A: 1–35, B: 36–69).
+        Labs occupy 2-hour windows: 9:15–11:15, 11:30–13:30, 14:00–16:00. Library Hour is not an attendance unit.
       </p>
     </div>`;
 
@@ -894,7 +1310,7 @@ function renderStudentList() {
           <span class="input-group-text"><i class="bi bi-search"></i></span>
           <input id="fa-search" type="text" class="form-control" placeholder="Search name or roll..." value="${esc(state.analysisSearch)}">
         </div>
-        <select id="fa-month" class="form-select form-select-sm" style="width:auto">${monthOptions()}</select>
+        <select id="fa-month" class="form-select form-select-sm" style="width:auto">${monthOptions(state.analysisMonth)}</select>
         <button id="back-btn" class="btn btn-outline-secondary btn-sm"><i class="bi bi-arrow-left me-1"></i> Back</button>
       </div>
     </div>
@@ -963,7 +1379,8 @@ function renderStudentDetail() {
   const monthMissed = hist.filter(h => monthKeyOf(h.date) === ym)
     .flatMap(h => h.records.filter(r => r.status !== 'P').map(r => {
       const slot = (timetableOf(st.semester)[weekdayOf(h.date)] || []).find(s => s.slot === r.slot);
-      return { date: h.date, slot: r.slot, subject: slot ? slot.subject : r.slot, status: r.status };
+      const subject = slot ? getLabSubjectForStudent(st.rollNo, slot) : r.slot;
+      return { date: h.date, slot: r.slot, subject, status: r.status };
     })).sort((a, b) => a.date.localeCompare(b.date));
 
   $('#view').innerHTML = `
@@ -974,7 +1391,7 @@ function renderStudentDetail() {
         <p class="text-muted small mb-0">${esc(st.name)} · ${esc(st.rollNo)}</p>
       </div>
       <div class="d-flex gap-2">
-        <select id="sd-month" class="form-select form-select-sm" style="width:auto">${monthOptions()}</select>
+        <select id="sd-month" class="form-select form-select-sm" style="width:auto">${monthOptions(state.analysisMonth)}</select>
         <button id="back-btn" class="btn btn-outline-secondary btn-sm"><i class="bi bi-arrow-left me-1"></i> Back</button>
       </div>
     </div>
@@ -985,7 +1402,10 @@ function renderStudentDetail() {
           <div class="avatar-lg mb-3">${esc(initials)}</div>
           <h5 class="fw-bold mb-1">${esc(st.name)}</h5>
           <span class="badge bg-primary mb-2">${esc(st.rollNo)}</span>
-          <div class="text-muted small">Computer Engineering • ${SEM_META[st.semester].label}</div>
+          <div class="text-muted small">
+            Computer Engineering • ${SEM_META[st.semester].label}
+            ${st.batch ? ` • Batch ${esc(st.batch)}` : ''}
+          </div>
         </div>
         <div class="pt-4 text-center">
           <div class="stat-label mb-3">${monthLabel(ym)}</div>
@@ -1113,9 +1533,11 @@ function renderStudentDetail() {
 }
 
 /* ==========================================================
-   REPORTS
+   REPORTS — now scope-aware (Day/Week/Month/Custom Range)
    ========================================================== */
 function renderReports() {
+  const rangeDates = getRangeDates();
+
   $('#view').innerHTML = `
     <div class="mb-4 anim-in">
       <div class="stat-label">Administrative Centre</div>
@@ -1125,16 +1547,19 @@ function renderReports() {
     ${banner()}
     <div class="content-card mb-4 anim-in anim-in-d1">
       <h6 class="fw-bold mb-3"><i class="bi bi-sliders text-primary me-2"></i>Report Scope</h6>
-      <div class="row g-3">
-        <div class="col-12 col-md-6">
-          <label class="form-label small fw-semibold text-muted">Semester</label>
-          <select id="rp-sem" class="form-select">${optionsHTML(SEMESTERS.map(s => [s, SEM_META[s].label]), refSemester())}</select>
+      <div class="row g-3 align-items-end">
+        <div class="col-12 col-md-auto">
+          <label class="form-label small fw-semibold text-muted mb-0">Semester</label>
+          <select id="rp-sem" class="form-select" style="min-width:200px">${optionsHTML(SEMESTERS.map(s => [s, SEM_META[s].label]), refSemester())}</select>
         </div>
-        <div class="col-12 col-md-6">
-          <label class="form-label small fw-semibold text-muted">Month</label>
-          <select id="rp-month" class="form-select">${monthOptions()}</select>
+        <div class="col-12 col-md">
+          ${scopeSelectorHTML('rp')}
         </div>
       </div>
+      <p class="text-muted small mt-3 mb-0">
+        <i class="bi bi-info-circle me-1"></i>
+        Reporting period: <strong>${rangeLabel()}</strong> · <strong>${rangeDates.length}</strong> day(s) with data.
+      </p>
     </div>
     <div class="row g-4">
       <div class="col-12 col-lg-4 anim-in anim-in-d2"><div class="content-card h-100">
@@ -1142,22 +1567,22 @@ function renderReports() {
         <div class="d-flex flex-column gap-2">
           <button id="rp-sem-month" class="report-card">
             <span class="icon-box bg-primary-subtle text-primary"><i class="bi bi-table"></i></span>
-            <span class="flex-grow-1"><span class="rc-title d-block">Semester Monthly Report</span><span class="rc-sub">Per-student attendance for a month</span></span>
+            <span class="flex-grow-1"><span class="rc-title d-block">Semester Report</span><span class="rc-sub">Per-student attendance over the selected scope</span></span>
             <i class="bi bi-arrow-right rc-arrow"></i>
           </button>
           <button id="rp-subject" class="report-card">
             <span class="icon-box bg-info-subtle text-info"><i class="bi bi-book"></i></span>
-            <span class="flex-grow-1"><span class="rc-title d-block">Subject-wise Report</span><span class="rc-sub">Attendance % by subject</span></span>
+            <span class="flex-grow-1"><span class="rc-title d-block">Subject-wise Report</span><span class="rc-sub">Attendance % by subject (batch-aware)</span></span>
             <i class="bi bi-arrow-right rc-arrow"></i>
           </button>
           <button id="rp-defaulter" class="report-card">
             <span class="icon-box bg-danger-subtle text-danger"><i class="bi bi-exclamation-triangle"></i></span>
-            <span class="flex-grow-1"><span class="rc-title d-block">Defaulter Report</span><span class="rc-sub">Below ${ATTENDANCE_THRESHOLD}% for selected month</span></span>
+            <span class="flex-grow-1"><span class="rc-title d-block">Defaulter Report</span><span class="rc-sub">Below ${ATTENDANCE_THRESHOLD}% for the selected scope</span></span>
             <i class="bi bi-arrow-right rc-arrow"></i>
           </button>
-          <button id="rp-monthly" class="report-card">
+          <button id="rp-daily" class="report-card">
             <span class="icon-box bg-success-subtle text-success"><i class="bi bi-calendar3"></i></span>
-            <span class="flex-grow-1"><span class="rc-title d-block">Monthly Overview</span><span class="rc-sub">All months for a semester</span></span>
+            <span class="flex-grow-1"><span class="rc-title d-block">Daily Summary</span><span class="rc-sub">Per-day attendance across the scope</span></span>
             <i class="bi bi-arrow-right rc-arrow"></i>
           </button>
         </div>
@@ -1182,9 +1607,14 @@ function renderReports() {
       <div class="col-12 col-lg-4 anim-in anim-in-d4"><div class="content-card h-100">
         <div class="report-group-title"><i class="bi bi-file-earmark-excel me-1"></i>Data Exports</div>
         <div class="d-flex flex-column gap-2">
+          <button id="rp-range-export" class="report-card">
+            <span class="icon-box bg-primary text-white"><i class="bi bi-calendar-range"></i></span>
+            <span class="flex-grow-1"><span class="rc-title d-block">Range Detail Export</span><span class="rc-sub">Every slot record within ${rangeLabel()}</span></span>
+            <i class="bi bi-download rc-arrow"></i>
+          </button>
           <button id="exp-records" class="report-card">
             <span class="icon-box bg-success-subtle text-success"><i class="bi bi-clipboard-data"></i></span>
-            <span class="flex-grow-1"><span class="rc-title d-block">Attendance Records</span><span class="rc-sub">Every individual slot record</span></span>
+            <span class="flex-grow-1"><span class="rc-title d-block">Attendance Records</span><span class="rc-sub">Every individual slot record (all time)</span></span>
             <i class="bi bi-download rc-arrow"></i>
           </button>
           <button id="exp-students" class="report-card">
@@ -1197,55 +1627,76 @@ function renderReports() {
             <span class="flex-grow-1"><span class="rc-title d-block">Monthly Summary</span><span class="rc-sub">Per-student per-month totals</span></span>
             <i class="bi bi-download rc-arrow"></i>
           </button>
-          <button id="exp-all" class="report-card">
-            <span class="icon-box bg-primary text-white"><i class="bi bi-box-seam"></i></span>
-            <span class="flex-grow-1"><span class="rc-title d-block">Full Package</span><span class="rc-sub">All three CSVs in one click</span></span>
-            <i class="bi bi-download rc-arrow"></i>
-          </button>
         </div>
       </div></div>
     </div>`;
 
-  const getSel = () => ({ sem: +$('#rp-sem').value, ym: $('#rp-month').value });
+  bindScopeSelector('rp', renderReports);
 
-  $('#rp-month').onchange = e => { state.analysisMonth = e.target.value; };
+  const getSem = () => +$('#rp-sem').value;
 
   $('#rp-sem-month').onclick = () => {
-    const { sem, ym } = getSel();
+    const sem = getSem();
+    const dates = getRangeDates();
     const studs = studentsOf(sem).slice().sort((a, b) => a.rollNo.localeCompare(b.rollNo, undefined, { numeric: true }));
     const head = ['Roll No','Name','Batch','Attended','Held','%','Present','Absent','Late','Bunk'];
     const body = studs.map(st => {
-      const s = studentStats(st.rollNo, ym);
+      const s = studentStatsForDates(st.rollNo, dates);
       return [st.rollNo, st.name, st.batch || '', s.att, s.held, s.pct + '%', s.att, s.abs, s.late, s.bunk];
     });
-    downloadCSV([head, ...body], `semester_${SEM_META[sem].code}_${ym}.csv`);
+    downloadCSV([head, ...body], `semester_${SEM_META[sem].code}_${rangeFileSuffix()}.csv`);
   };
 
   $('#rp-subject').onclick = () => {
-    const { sem, ym } = getSel();
-    const rows = subjectStatsForSem(sem, ym);
+    const sem = getSem();
+    const dates = getRangeDates();
+    const rows = subjectStatsForSemDates(sem, dates);
     const head = ['Subject','Present','Total','%'];
     downloadCSV([head, ...rows.map(r => [r.subject, r.present, r.total, r.pct + '%'])],
-      `subject_${SEM_META[sem].code}_${ym}.csv`);
+      `subject_${SEM_META[sem].code}_${rangeFileSuffix()}.csv`);
   };
 
   $('#rp-defaulter').onclick = () => {
-    const { sem, ym } = getSel();
-    const rows = defaulterList(sem, ym);
+    const sem = getSem();
+    const dates = getRangeDates();
+    const rows = defaulterListForDates(sem, dates);
     const head = ['Roll No','Name','Batch','Attended','Held','%'];
     downloadCSV([head, ...rows.map(r => [r.rollNo, r.name, r.batch || '', r.att, r.held, r.pct + '%'])],
-      `defaulters_${SEM_META[sem].code}_${ym}.csv`);
+      `defaulters_${SEM_META[sem].code}_${rangeFileSuffix()}.csv`);
   };
 
-  $('#rp-monthly').onclick = () => {
-    const { sem } = getSel();
-    const months = getMonths();
-    const head = ['Month','Attended','Held','%'];
-    const body = months.map(ym => {
-      const s = monthlySemStats(sem, ym);
-      return [monthLabel(ym), s.att, s.held, s.pct + '%'];
+  $('#rp-daily').onclick = () => {
+    const sem = getSem();
+    const dates = getRangeDates();
+    const head = ['Date','Day','Students','Present','Absent','Late','Bunk','Attendance %'];
+    const body = dates.map(d => {
+      const rows = getDailyRows(d, sem);
+      const c = countByStatus(rows);
+      return [d, weekdayOf(d), rows.length, c.Present, c.Absent, c.Late, c.Bunk, overallRate(rows) + '%'];
     });
-    downloadCSV([head, ...body], `monthly_${SEM_META[sem].code}.csv`);
+    downloadCSV([head, ...body], `daily_${SEM_META[sem].code}_${rangeFileSuffix()}.csv`);
+  };
+
+  $('#rp-range-export').onclick = () => {
+  const sem = getSem();
+  const dates = getRangeDates();
+    const dateSet = new Set(dates);
+    const scopeRolls = new Set(studentsOf(sem).map(s => s.rollNo));
+    const tt = timetableOf(sem);
+    const recs = RECORDS
+      .filter(r => dateSet.has(r.date) && scopeRolls.has(r.rollNo))
+      .slice()
+      .sort((a, b) => a.date.localeCompare(b.date)
+                   || a.rollNo.localeCompare(b.rollNo, undefined, { numeric: true })
+                   || a.slot.localeCompare(b.slot));
+    const head = ['Date','Day','Roll No','Student Name','Semester','Slot','Subject','Status'];
+    const body = recs.map(r => {
+      const st = findStudent(r.rollNo) || {};
+      const slot = (tt[weekdayOf(r.date)] || []).find(s => s.slot === r.slot);
+      const subj = slot ? getLabSubjectForStudent(r.rollNo, slot) : '';
+      return [r.date, weekdayOf(r.date), r.rollNo, st.name || '', SEM_META[sem].code, r.slot, subj, r.status];
+    });
+    downloadCSV([head, ...body], `range_${SEM_META[sem].code}_${rangeFileSuffix()}.csv`);
   };
 
   $('#rp-student-btn').onclick = () => {
@@ -1264,11 +1715,6 @@ function renderReports() {
   $('#exp-records').onclick = exportAttendanceRecords;
   $('#exp-students').onclick = exportStudentMaster;
   $('#exp-monthly').onclick  = exportMonthlySummary;
-  $('#exp-all').onclick = () => {
-    exportAttendanceRecords();
-    setTimeout(exportStudentMaster, 300);
-    setTimeout(exportMonthlySummary, 600);
-  };
 }
 
 function downloadCSV(rows, filename) {
@@ -1286,21 +1732,14 @@ function exportAttendanceRecords() {
     const sem = st.semester || 5;
     const wd = weekdayOf(r.date);
     const slot = (timetableOf(sem)[wd] || []).find(s => s.slot === r.slot);
+    const subj = slot ? getLabSubjectForStudent(r.rollNo, slot) : '';
     return [
-      r.rollNo,
-      st.name || '',
-      SEM_META[sem].code,
-      'Computer Engineering',
-      r.date,
-      monthKeyOf(r.date),
-      slot ? slot.subject : '',
-      r.slot,
-      r.status
+      r.rollNo, st.name || '', SEM_META[sem].code, 'Computer Engineering',
+      r.date, monthKeyOf(r.date), subj, r.slot, r.status
     ];
   });
   downloadCSV([head, ...rows], 'attendance_records.csv');
 }
-
 function exportStudentMaster() {
   const head = ['Roll No','Name','Semester','Branch','Batch'];
   const rows = SEMESTERS.flatMap(sem =>
@@ -1310,7 +1749,6 @@ function exportStudentMaster() {
   );
   downloadCSV([head, ...rows], 'student_master.csv');
 }
-
 function exportMonthlySummary() {
   const head = ['Roll No','Name','Semester','Month','Attended','Held','%'];
   const rows = [];
@@ -1379,7 +1817,7 @@ function renderImport() {
 }
 
 /* ==========================================================
-   MANAGE modal (students + timetable + bulk paste)
+   MANAGE modal
    ========================================================== */
 function openManageModal() {
   state.manageSem = state.manageSem || 5;
@@ -1603,28 +2041,37 @@ function handleManageAdd(btn) {
 }
 
 /* ==========================================================
+   Generic list modal
+   ========================================================== */
+function openListModal(title, bodyHtml, tone = 'primary') {
+  const titleEl = $('#list-modal-title');
+  const bodyEl  = $('#list-modal-body');
+  if (!titleEl || !bodyEl) return;
+  titleEl.innerHTML = `<i class="bi bi-list-ul me-2 text-${tone}"></i>${esc(title)}`;
+  bodyEl.innerHTML = bodyHtml;
+  bootstrap.Modal.getOrCreateInstance($('#listModal')).show();
+}
+
+/* ==========================================================
    Theme + routing
    ========================================================== */
 function applyTheme() {
   document.documentElement.setAttribute('data-theme', state.theme);
   document.documentElement.setAttribute('data-bs-theme', state.theme);
-  $('#theme-btn').innerHTML = state.theme === 'light'
+  const btn = $('#theme-btn');
+  if (!btn) return;
+  btn.innerHTML = state.theme === 'light'
     ? `<i class="bi bi-moon-stars-fill text-primary"></i><span class="small d-none d-md-inline">Dark Mode</span>`
     : `<i class="bi bi-sun-fill text-warning"></i><span class="small d-none d-md-inline">Light Mode</span>`;
 }
 
-$('#theme-btn').onclick = () => {
-  state.theme = state.theme === 'light' ? 'dark' : 'light';
-  localStorage.setItem('theme', state.theme);
-  applyTheme();
-  render();
-};
-
 function render() {
   charts.forEach(c => c.destroy());
   charts = [];
-  $('#nav-desktop').innerHTML = $('#nav-mobile').innerHTML = navHTML();
-  ({
+  const nd = $('#nav-desktop'), nm = $('#nav-mobile');
+  if (nd) nd.innerHTML = navHTML();
+  if (nm) nm.innerHTML = navHTML();
+  const pages = {
     dashboard: renderDashboard,
     mark:      renderMarkAttendance,
     daily:     renderDaily,
@@ -1632,10 +2079,17 @@ function render() {
     analysis:  renderAnalysis,
     reports:   renderReports,
     import:    renderImport
-  })[state.tab]();
+  };
+  const fn = pages[state.tab] || renderDashboard;
+  fn();
 }
 
 function route() {
+  if (!isAuthed()) { showLogin(); return; }
+  $('#login-root').classList.add('d-none');
+  $('#app-root').classList.remove('d-none');
+  updateUserChip();
+
   const id = location.hash.slice(1);
   state.tab = NAV.some(n => n[0] === id) ? id : 'dashboard';
   const menu = document.getElementById('mobileNav');
@@ -1645,6 +2099,7 @@ function route() {
   window.scrollTo(0, 0);
 }
 
+/* ---------- Global listeners ---------- */
 $('#manage-body').addEventListener('click', e => {
   const semBtn = e.target.closest('[data-msem]');
   if (semBtn) { state.manageSem = +semBtn.dataset.msem; renderManageBody(); return; }
@@ -1665,6 +2120,87 @@ $('#manage-reset').addEventListener('click', () => {
   render();
 });
 
+$('#theme-btn').onclick = () => {
+  state.theme = state.theme === 'light' ? 'dark' : 'light';
+  localStorage.setItem('theme', state.theme);
+  applyTheme();
+  render();
+};
+
+async function refreshFromSheet() {
+  const btn = $('#refresh-btn');
+  if (!btn || btn.disabled) return;
+  const original = btn.innerHTML;
+  btn.disabled = true;
+  btn.innerHTML = `<span class="spinner-border spinner-border-sm me-1"></span>Refreshing`;
+  try {
+    await loadFromSheets();
+    DATES = getDates();
+    const months = getMonths();
+    if (months.length) {
+      if (!months.includes(state.month)) state.month = months[0];
+      if (!months.includes(state.analysisMonth)) state.analysisMonth = months[0];
+    }
+    if (DATES.length && !DATES.includes(state.date)) {
+      state.date = DATES[DATES.length - 1];
+    }
+    render();
+    toast('Sheet data refreshed.');
+  } catch (err) {
+    console.error('Refresh failed:', err);
+    toast('Refresh failed: ' + err.message, 'danger');
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = original;
+  }
+}
+
+$('#btn-logout').onclick = () => {
+  if (!confirm('Log out of this session?')) return;
+  clearSession();
+  state.tab = 'dashboard';
+  if (location.hash) location.hash = '';
+  showLogin();
+  toast('Signed out.');
+};
+$('#btn-switch').onclick = () => {
+  clearSession();
+  state.tab = 'dashboard';
+  if (location.hash) location.hash = '';
+  showLogin();
+  toast('Switched account.', 'success');
+};
+
 window.addEventListener('hashchange', route);
 applyTheme();
-route();
+
+(function bindRefresh() {
+  const btn = $('#refresh-btn');
+  if (btn) btn.onclick = refreshFromSheet;
+})();
+
+if (isAuthed()) {
+  startApp();
+} else {
+  showLogin();
+}
+
+loadFromSheets()
+  .then(() => {
+    DATES = getDates();
+    const months = getMonths();
+    if (months.length) {
+      if (!months.includes(state.month)) state.month = months[0];
+      if (!months.includes(state.analysisMonth)) state.analysisMonth = months[0];
+    }
+    if (DATES.length && !DATES.includes(state.date)) {
+      state.date = DATES[DATES.length - 1];
+    }
+    if (isAuthed()) render();
+  })
+  .catch(err => {
+    console.error('Sheet load failed:', err);
+    if (!RECORDS.length && isAuthed()) {
+      toast('Could not load data from Google Sheets. Check the console.', 'danger');
+    }
+  });
